@@ -1,10 +1,15 @@
-use std::{ffi::{c_char, c_ulong}, ptr::NonNull};
-use std::convert::Into;
-use std::mem::MaybeUninit;
-use tokio;
+use crate::rich_presence_core::NexusRichPresence;
+use mumble_data::MumbleLinkData;
 use nexus_rs::raw_structs::{AddonAPI, AddonDefinition, AddonVersion, EAddonFlags, LPVOID};
 use once_cell::sync::OnceCell;
-use tokio::task::JoinHandle;
+use std::convert::Into;
+use std::mem::MaybeUninit;
+use std::thread::JoinHandle;
+use std::{
+    ffi::{c_char, c_ulong},
+    ptr::NonNull,
+};
+use tokio;
 use windows::{
     core::s,
     Win32::{
@@ -12,14 +17,15 @@ use windows::{
         System::SystemServices,
     },
 };
-use crate::rich_presence_core::NexusRichPresence;
 
+mod mumble_data;
 mod rich_presence_core;
 
 static mut HANDLE: Option<HMODULE> = None;
 static mut THREADS: OnceCell<Vec<JoinHandle<()>>> = OnceCell::new();
 static mut API: MaybeUninit<&'static AddonAPI> = MaybeUninit::uninit();
 static DISCORD_APP_ID_I64: i64 = 1180951923722039316;
+static mut MUMBLE_DATA: OnceCell<&'static MumbleLinkData> = OnceCell::new();
 
 #[no_mangle]
 unsafe extern "C" fn DllMain(
@@ -38,11 +44,22 @@ unsafe extern "C" fn DllMain(
 
 unsafe extern "C" fn load(a_api: *mut AddonAPI) {
     API.write(&*a_api);
+
+    let mumbledata = (API.assume_init().get_resource)(s!("DL_MUMBLE_LINK").0 as _);
+    if mumbledata.is_null() {
+        panic!("no mumble")
+    } else {
+    }
     THREADS.set(Vec::new()).expect("TODO: panic message");
 
-    let n = NexusRichPresence::new(DISCORD_APP_ID_I64);
-    let handle = n.start();
-    THREADS.get_mut().unwrap().push(handle);
+    THREADS.get_mut().unwrap().push(std::thread::spawn(|| {
+        let n = NexusRichPresence::new(DISCORD_APP_ID_I64);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        rt.block_on(n.start());
+    }));
 }
 
 unsafe extern "C" fn unload() {}
@@ -60,7 +77,8 @@ pub extern "C" fn GetAddonDef() -> *mut AddonDefinition {
             revision: 0,
         },
         author: b"Zyian\0".as_ptr() as *const c_char,
-        description: b"A Discord Rich Presence addon for showing your current status in game\0".as_ptr() as *const c_char,
+        description: b"A Discord Rich Presence addon for showing your current status in game\0"
+            .as_ptr() as *const c_char,
         load,
         unload: Some(unsafe { NonNull::new_unchecked(unload as _) }),
         flags: EAddonFlags::None,
